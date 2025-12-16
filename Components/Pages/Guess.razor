@@ -1,0 +1,290 @@
+﻿@page "/guess"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
+@using System.IO
+@using System.Text.Json
+@using MusicGame.Services
+@using MusicGame.Structs
+
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager NavManager
+@inject IWebHostEnvironment Environment
+@inject UserService UserService
+
+<div class="container mt-4" style="max-width: 800px;">
+
+	<h2 class="text-center mb-4" style="color:white">Make Your Guesses</h2>
+
+	@if (isLoading)
+	{
+		<p class="text-center">Loading game data...</p>
+	}
+	else
+	{
+		@if (hasPlayed)
+		{
+			<div class="alert @(currentGame.Guessing ? "alert-success" : "alert-primary") text-center">
+				<h3>Current Score: @finalScore / @guessModels.Count</h3>
+
+				@if (currentGame.Guessing)
+				{
+					<p class="mb-0 fw-bold">
+						<span class="bi bi-lock-fill"></span>
+						Guesses submitted. You cannot change them anymore.
+					</p>
+				}
+				else
+				{
+					<p class="mb-0">The round is over. See the correct answers below.</p>
+				}
+			</div>
+		}
+
+		@if (!currentGame.Guessing && !hasPlayed)
+		{
+			<div class="card text-white bg-secondary mb-3">
+				<div class="card-header">Round Closed</div>
+				<div class="card-body">
+					<h5 class="card-title">Guessing Phase is not currently open.</h5>
+				</div>
+			</div>
+		}
+		else
+		{
+			<div class="alert alert-info">
+				<strong>Theme:</strong> @currentGame.Theme
+			</div>
+
+			<div class="card">
+				<div class="card-body" style="background-color: #202020; color: white;">
+
+					@foreach (GuessViewModel item in guessModels)
+					{
+						<div class="row mb-3 align-items-center border-bottom pb-3 pt-2" @key="item.SubmissionId">
+
+							<div class="col-md-6">
+								<a href="@item.Link" target="_blank" class="d-block text-truncate text-white fw-bold">
+									<span class="bi bi-music-note-beamed me-2"></span> @item.Name
+								</a>
+							</div>
+
+							<div class="col-md-6">
+								<select class="form-select text-white border-secondary"
+										@key="item.SubmissionId"
+										@bind="item.GuessedUserId"
+										disabled="@(!currentGame.Guessing || hasPlayed)"
+										style="background-color: #212529; opacity: @(hasPlayed ? "0.7" : "1");">
+									<option value="0">-- Select a Person --</option>
+									@foreach (var user in participants)
+									{
+										bool isTaken = guessModels.Any(g => g.GuessedUserId == user.Key && g != item);
+
+										if (!isTaken)
+										{
+											<option value="@user.Key" @key="user.Key">@user.Value</option>
+										}
+									}
+								</select>
+
+								@if (!currentGame.Guessing)
+								{
+									@if (!item.IsCorrect)
+									{
+										<div class="mt-2 text-danger fw-bold small">
+											<span class="bi bi-x-circle-fill"></span>
+											Correct answer: <span class="text-white">@item.CorrectUserName</span>
+										</div>
+									}
+									else
+									{
+										<div class="mt-2 text-success fw-bold small">
+											<span class="bi bi-check-circle-fill"></span> Correct!
+										</div>
+									}
+								}
+							</div>
+						</div>
+					}
+
+					@if (currentGame.Guessing && !hasPlayed)
+					{
+						<div class="mt-4">
+							<button class="btn btn-success w-100 btn-lg" @onclick="SubmitGuesses">
+								<span class="bi bi-check-circle me-2"></span> Submit & Lock Guesses
+							</button>
+						</div>
+					}
+					else
+					{
+						<div class="mt-4">
+							<button class="btn btn-success w-100 btn-lg">
+								<span class="bi bi-check-circle me-2"></span> Guess Already Submitted
+							</button>
+						</div>
+					}
+				</div>
+			</div>
+		}
+	}
+</div>
+
+@code {
+	private GameData currentGame = new();
+	private bool isLoading = true;
+	private bool hasPlayed = false;
+	private int finalScore = 0;
+	private int currentUserId;
+
+	private Dictionary<int, string> participants = new();
+	private List<GuessViewModel> guessModels = new();
+
+	private string filePath => Path.Combine(Environment.WebRootPath ?? Environment.ContentRootPath, "Current.json");
+
+	protected override async Task OnInitializedAsync()
+	{
+		var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+		var user = authState.User;
+		if (user.Identity?.IsAuthenticated == true)
+		{
+			var idClaim = user.FindFirst(ClaimTypes.NameIdentifier);
+			if (idClaim != null && int.TryParse(idClaim.Value, out int id))
+			{
+				currentUserId = id;
+			}
+		}
+
+		await LoadData();
+		isLoading = false;
+	}
+
+	private async Task LoadData()
+	{
+		if (File.Exists(filePath))
+		{
+			var json = await File.ReadAllTextAsync(filePath);
+			var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+			currentGame = JsonSerializer.Deserialize<GameData>(json, options) ?? new GameData();
+
+			var submitterIds = currentGame.Submissions.Select(s => s.UserId).ToList();
+			participants = await UserService.GetUsernamesAsync(submitterIds);
+
+			guessModels.Clear();
+
+			var existingUserGuess = currentGame.Guesses.FirstOrDefault(g => g.UserId == currentUserId);
+
+			if (existingUserGuess != null)
+			{
+				hasPlayed = true;
+			}
+
+			foreach (var sub in currentGame.Submissions)
+			{
+				int previousPick = 0;
+				if (existingUserGuess != null)
+				{
+					var detail = existingUserGuess.GuessDetails.FirstOrDefault(d => d.SubmissionId == sub.Id);
+					if (detail != null) previousPick = detail.UserId;
+				}
+
+				guessModels.Add(new GuessViewModel
+				{
+					SubmissionId = sub.Id,
+					Link = sub.Link,
+					GuessedUserId = previousPick,
+					ActualUserId = sub.UserId,
+					Name = sub.Name
+				});
+			}
+
+			if (hasPlayed)
+			{
+				finalScore = currentGame.Guesses.First(g => g.UserId == currentUserId).Score;
+			}
+		}
+	}
+
+	private void CalculateScoreInternal()
+	{
+		finalScore = 0;
+		foreach (var guess in guessModels)
+		{
+			guess.IsCorrect = (guess.GuessedUserId == guess.ActualUserId);
+
+			if (guess.IsCorrect)
+			{
+				finalScore++;
+			}
+			else
+			{
+				if (participants.TryGetValue(guess.ActualUserId, out string? realName))
+				{
+					guess.CorrectUserName = realName;
+				}
+			}
+		}
+	}
+
+	private async Task SubmitGuesses()
+	{
+		if (File.Exists(filePath))
+		{
+			Task<string> json = File.ReadAllTextAsync(filePath);
+			JsonSerializerOptions options = new() { PropertyNameCaseInsensitive = true };
+			var diskState = JsonSerializer.Deserialize<GameData>(json.Result, options);
+
+			if (diskState != null && !diskState.Guessing)
+			{
+				await LoadData();
+				return;
+			}
+
+			if (diskState != null)
+			{
+				currentGame = diskState;
+			}
+		}
+
+		CalculateScoreInternal();
+
+		PlayerGuess newGuessEntry = new()
+		{
+			UserId = currentUserId,
+			Score = finalScore,
+			GuessDetails = guessModels.Select(m => new GuessDetail
+			{
+				SubmissionId = m.SubmissionId,
+				UserId = m.GuessedUserId
+			}).ToList()
+		};
+
+		var existingIndex = currentGame.Guesses.FindIndex(g => g.UserId == currentUserId);
+		if (existingIndex != -1)
+		{
+			currentGame.Guesses[existingIndex] = newGuessEntry;
+		}
+		else
+		{
+			currentGame.Guesses.Add(newGuessEntry);
+		}
+
+		var writeOptions = new JsonSerializerOptions { WriteIndented = true };
+		await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(currentGame, writeOptions));
+
+		hasPlayed = true;
+	}
+
+	public class GuessViewModel
+	{
+		public int SubmissionId { get; set; }
+		public string Name { get; set; } = "";
+		public string Link { get; set; } = "";
+		public int GuessedUserId { get; set; }
+		public int ActualUserId { get; set; }
+		public bool IsCorrect { get; set; }
+		public string CorrectUserName { get; set; } = "";
+	}
+}

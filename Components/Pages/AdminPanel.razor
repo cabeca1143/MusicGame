@@ -1,0 +1,277 @@
+﻿@page "/AdminPanel"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
+@using MusicGame.Services
+@using System.IO
+@using System.Text.Json
+@using System.Text.Json.Serialization
+@using MusicGame.Structs
+
+@inject NavigationManager NavManager
+@inject UserService UserService
+@inject IWebHostEnvironment Environment
+
+<div class="container mt-4" style="text-align:center;color:white">
+	<h2>Admin Panel</h2>
+</div>
+
+<CascadingAuthenticationState>
+	<AuthorizeView Roles="Admin">
+		<Authorized>
+			@if (currentGame == null)
+			{
+				<p>Loading game data...</p>
+			}
+			else
+			{
+				<div class="card mb-4">
+					<div class="card-header bg-primary text-white">Game Settings</div>
+					<div class="card-body" style="color: white;background-color: #202020">
+
+						<div class="mb-3">
+							<label class="form-label">Current Theme:</label>
+							<div class="input-group">
+								<input type="text" class="form-control" @bind="currentGame.Theme" @bind:event="oninput" />
+								<button class="btn @(currentGame.Theme == originalTheme ? "btn-secondary" : "btn-primary")"
+										@onclick="SaveData"
+										disabled="@(currentGame.Theme == originalTheme)">
+									Save Theme
+								</button>
+							</div>
+						</div>
+
+						<div class="d-flex gap-3">
+							<button class="btn @(currentGame.AcceptingSubmissions ? "btn-success" : "btn-danger")"
+									@onclick="ToggleSubmissions">
+								Accepting Submissions: @(currentGame.AcceptingSubmissions ? "ON" : "OFF")
+							</button>
+
+							<button class="btn @(currentGame.Guessing ? "btn-success" : "btn-danger")"
+									@onclick="ToggleGuessing">
+								Guessing Phase: @(currentGame.Guessing ? "ON" : "OFF")
+							</button>
+						</div>
+					</div>
+				</div>
+
+				<div class="row">
+					<div class="col-md-6">
+						<div class="card mb-4">
+							<div class="card-header bg-info text-white">Participants</div>
+							<ul class="list-group list-group-flush">
+								@foreach (KeyValuePair<int, string> user in ParticipantList)
+								{
+									<li class="list-group-item list-group-item-dark d-flex justify-content-between align-items-center"
+										style="color: white;background-color: #202020">
+
+										<span>@user.Value</span>
+
+										<button class="btn btn-sm btn-danger" @onclick="() => DeleteSubmission(user.Key)">
+											<span class="bi bi-trash-fill"></span> Delete
+										</button>
+									</li>
+								}
+							</ul>
+						</div>
+					</div>
+
+					@* <div class="col-md-6">
+						<div class="card mb-4">
+							<div class="card-header bg-warning text-dark">Submissions</div>
+							<ul class="list-group list-group-flush">
+								@if (ScrambledLinks.Count < 4)
+								{
+									<li class="list-group-item list-group-item-dark" style="color: white;background-color: #202020">Too few participants!</li>
+								}
+								else
+								{
+									foreach (var link in ScrambledLinks)
+									{
+										<li class="list-group-item" style="color: white;background-color: #202020">
+											<a href="@link.Key" target="_blank" class="text-truncate d-block">@link.Value</a>
+										</li>
+									}
+								}
+							</ul>
+						</div>
+					</div> *@
+				</div>
+
+				<div class="text-center">
+					<div class="d-flex gap-3" style="margin-bottom: 10px">
+						<a href="api/download/game-data" class="btn btn-primary">
+							<span class="bi bi-download"></span> Download JSON
+						</a>
+					</div>
+				</div>
+
+				<div class="text-center">
+					<button class="btn btn-danger btn-lg w-100" @onclick="() => showNewRoundModal = !showNewRoundModal">
+						<span class="bi bi-exclamation-triangle-fill" aria-hidden="true"></span>
+						Archive Current Game & Start New Round
+					</button>
+				</div>
+
+				<div style="margin:20px"></div>
+
+				if (showNewRoundModal)
+				{
+					<div class="modal-backdrop-custom">
+						<div class="modal-content-custom">
+							<h3 class="text-danger">Are you sure?</h3>
+							<p style="color:white">This will <strong>archive</strong> the current game to the database and <strong>wipe</strong> the JSON file for a new round.</p>
+
+							<div class="mb-3 text-start">
+								<label style="color:white" class="form-label fw-bold">Enter Theme for Next Round:</label>
+								<input type="text" class="form-control" @bind="newRoundTheme" placeholder="e.g. Best 80s Song" />
+							</div>
+
+							<div class="d-flex justify-content-end gap-2">
+								<button class="btn btn-secondary" @onclick="() => showNewRoundModal = false">Cancel</button>
+								<button class="btn btn-danger" @onclick="FinalizeNewRound">Confirm & Reset</button>
+							</div>
+						</div>
+					</div>
+				}
+			}
+		</Authorized>
+		<NotAuthorized>
+			<p>You are not authorized to view this page.</p>
+		</NotAuthorized>
+	</AuthorizeView>
+</CascadingAuthenticationState>
+
+@code
+{
+	private GameData? currentGame;
+	private List<KeyValuePair<int, string>> ParticipantList = new(); 
+	private List<KeyValuePair<string, string>> ScrambledLinks = new();
+	private bool showNewRoundModal = false;
+	private string newRoundTheme = "";
+	private string originalTheme = "";
+	private string filePath => Path.Combine(Environment.WebRootPath ?? Environment.ContentRootPath, "Current.json");
+
+	protected override async Task OnInitializedAsync()
+	{
+		await UserService.RedirectIfNotLoggedIn();
+		bool admin = await UserService.IsAdminAsync();
+		if (!admin)
+		{
+			NavManager.NavigateTo("/");
+			return;
+		}
+
+		await LoadData();
+	}
+
+	private async Task LoadData()
+	{
+		if (File.Exists(filePath))
+		{
+			Task<string> json = File.ReadAllTextAsync(filePath);
+			JsonSerializerOptions options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+			currentGame = JsonSerializer.Deserialize<GameData>(json.Result, options);
+
+			if (currentGame != null)
+			{
+				originalTheme = currentGame.Theme;
+				await PrepareScrambledLists();
+			}
+		}
+		else
+		{
+			currentGame = new GameData();
+		}
+	}
+
+	private async Task SaveData()
+	{
+		if (currentGame != null)
+		{
+			string json = JsonSerializer.Serialize(currentGame, new JsonSerializerOptions { WriteIndented = true });
+			await File.WriteAllTextAsync(filePath, json);
+			originalTheme = currentGame.Theme;
+		}
+	}
+
+	private async Task DeleteSubmission(int userId)
+	{
+		if (currentGame == null) return;
+
+		var submission = currentGame.Submissions.FirstOrDefault(s => s.UserId == userId);
+		if (submission != null)
+		{
+			currentGame.Submissions.Remove(submission);
+			await SaveData();
+			await PrepareScrambledLists();
+		}
+	}
+
+	private async Task ToggleSubmissions()
+	{
+		if (currentGame == null)
+		{
+			return;
+		}
+		currentGame.AcceptingSubmissions = !currentGame.AcceptingSubmissions;
+		await SaveData();
+	}
+
+	private async Task ToggleGuessing()
+	{
+		if (currentGame == null)
+		{
+			return;
+		}
+		currentGame.Guessing = !currentGame.Guessing;
+		await SaveData();
+	}
+
+	private async Task PrepareScrambledLists()
+	{
+		if (currentGame == null) return;
+
+		List<int> userIds = currentGame.Submissions.Select(s => s.UserId).ToList();
+		Dictionary<int, string> namesDict = await UserService.GetUsernamesAsync(userIds);
+
+		// CHANGE 2: Map to KeyValuePair so we have the ID for the delete button
+		ParticipantList = namesDict.ToList();
+
+		// Optional: Keep the shuffle if you want the order randomized
+
+		ScrambledLinks = currentGame.Submissions
+			.Select(s => new KeyValuePair<string, string>(s.Link, s.Name))
+			.ToList();
+	}
+
+	private async Task FinalizeNewRound()
+	{
+		if (string.IsNullOrWhiteSpace(newRoundTheme))
+		{
+			return;
+		}
+
+		var oldJson = JsonSerializer.Serialize(currentGame);
+
+		await UserService.ArchiveGameAsync(currentGame?.Theme ?? "Unknown", oldJson);
+
+		var newGame = new GameData
+		{
+			Theme = newRoundTheme,
+			AcceptingSubmissions = true, // Usually start new round open
+			Guessing = false,
+			Submissions = [],
+			Guesses = []
+		};
+
+		string newJson = JsonSerializer.Serialize(newGame, new JsonSerializerOptions { WriteIndented = true });
+		await File.WriteAllTextAsync(filePath, newJson);
+
+		currentGame = newGame;
+		showNewRoundModal = false;
+		newRoundTheme = "";
+
+		await PrepareScrambledLists();
+	}
+}

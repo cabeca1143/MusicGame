@@ -1,0 +1,26 @@
+﻿@page "/"
+
+@using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
+@using MusicGame.Services
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager NavManager
+@inject UserService UserService
+
+<div style="text-align: center; margin-top: 50px;">
+	<h1 style="color:white;">Hello @User.Identity!.Name!</h1>
+</div>
+
+
+@code {
+	private bool isAuthenticated = false;
+	private ClaimsPrincipal User;
+
+	protected override async Task OnInitializedAsync()
+	{
+		await UserService.RedirectIfNotLoggedIn();
+
+		var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+		User = authState.User;
+	}
+}

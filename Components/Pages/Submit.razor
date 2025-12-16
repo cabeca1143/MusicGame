@@ -1,0 +1,178 @@
+﻿@page "/submit"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
+@using System.IO
+@using System.Text.Json
+@using MusicGame.Services
+@using System.Text.Json.Serialization
+@using MusicGame.Structs
+@using VideoLibrary
+@inject AuthenticationStateProvider AuthStateProvider
+@inject IWebHostEnvironment Environment
+@inject UserService UserService
+
+<div class="container mt-4" style="max-width: 600px;">
+
+	@if (isLoading)
+	{
+		<p>Loading...</p>
+	}
+	else if (!currentGame.AcceptingSubmissions)
+	{
+		<div class="card text-white bg-danger mb-3">
+			<div class="card-header">Submissions Closed</div>
+			<div class="card-body">
+				<h5 class="card-title">The round is currently locked.</h5>
+				<p class="card-text">Please wait for the Admin to open the next round of submissions.</p>
+			</div>
+		</div>
+	}
+	else
+	{
+		<div class="card">
+			<div class="card-header bg-primary text-white">
+				Submit Your Song
+			</div>
+			<div class="card-body" style="background-color: #202020; color: white;">
+
+				<h4 class="mb-3">Theme: <span class="text-info">@currentGame.Theme</span></h4>
+
+				@if (hasSubmitted)
+				{
+					<div class="alert alert-success">
+						<div>
+							You have already submitted! You can update your link below.
+						</div>
+						<div>
+							Current Submission: @name
+						</div>
+					</div>
+				}
+
+				<div class="mb-3">
+					<label class="form-label">YouTube Link:</label>
+					<input type="text" class="form-control" @bind="userLink" placeholder="https://..." />
+				</div>
+
+				<button class="btn btn-success w-100" @onclick="SubmitLink">
+					@(hasSubmitted ? "Update Submission" : "Submit Song")
+				</button>
+
+			</div>
+		</div>
+	}
+
+</div>
+
+@code
+{
+	private GameData currentGame = new();
+	private bool isLoading = true;
+	private bool hasSubmitted = false;
+	private string userLink = "";
+	private string name = "";
+	private int currentUserId;
+
+	private string filePath => Path.Combine(Environment.WebRootPath ?? Environment.ContentRootPath, "Current.json");
+
+	protected override async Task OnInitializedAsync()
+	{
+		await UserService.RedirectIfNotLoggedIn();
+
+		AuthenticationState authState = await AuthStateProvider.GetAuthenticationStateAsync();
+		ClaimsPrincipal user = authState.User;
+
+		if (user.Identity?.IsAuthenticated == true)
+		{
+			Claim? idClaim = user.FindFirst(ClaimTypes.NameIdentifier);
+			if (idClaim is not null && int.TryParse(idClaim.Value, out int id))
+			{
+				currentUserId = id;
+			}
+		}
+
+		await LoadData(true);
+		isLoading = false;
+	}
+
+	private async Task LoadData(bool overrideUserLink)
+	{
+		if (File.Exists(filePath))
+		{
+			string json = await File.ReadAllTextAsync(filePath);
+			currentGame = JsonSerializer.Deserialize<GameData>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new GameData();
+
+			Submission? existingSub = currentGame.Submissions.FirstOrDefault(s => s.UserId == currentUserId);
+			if (existingSub is not null)
+			{
+				hasSubmitted = true;
+				if (overrideUserLink)
+				{
+					userLink = existingSub.Link;
+					name = existingSub.Name;
+				}
+			}
+		}
+	}
+
+	private async Task SubmitLink()
+	{
+		if (string.IsNullOrWhiteSpace(userLink))
+		{
+			return;
+		}
+
+		await LoadData(false);
+
+
+		if (!currentGame.AcceptingSubmissions)
+		{
+			return;
+		}
+
+		if (!Uri.TryCreate(userLink, UriKind.Absolute, out _))
+		{
+			return;
+		}
+
+		try
+		{
+			YouTube youTube = YouTube.Default;
+			YouTubeVideo video = youTube.GetVideo(userLink);
+			name = video.Title;
+		}
+		catch(Exception)
+		{
+			return;
+		}
+
+
+		Submission? existingSub = currentGame.Submissions.FirstOrDefault(s => s.UserId == currentUserId);
+		if (existingSub is not null)
+		{
+			existingSub.Link = userLink;
+			existingSub.Name = name;
+		}
+		else
+		{
+			int newId = currentGame.Submissions.Count + 1;
+
+			currentGame.Submissions.Add(new Submission
+			{
+				Id = newId,
+				UserId = currentUserId,
+				Link = userLink,
+				Name = name
+			});
+
+			hasSubmitted = true;
+		}
+
+		string json = JsonSerializer.Serialize(currentGame, new JsonSerializerOptions { WriteIndented = true });
+		await File.WriteAllTextAsync(filePath, json);
+	}
+}

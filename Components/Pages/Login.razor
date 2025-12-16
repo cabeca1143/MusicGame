@@ -1,0 +1,78 @@
+﻿@page "/login"
+@layout LoginLayout
+@using Microsoft.AspNetCore.WebUtilities 
+@inject NavigationManager NavManager
+
+<h2 style="text-align:center; margin-bottom: 20px;">Welcome Back</h2>
+
+<form action="api/auth/login" method="post">
+
+    <AntiforgeryToken />
+
+    @if (!string.IsNullOrEmpty(ErrorMessage))
+    {
+        <div class="alert alert-danger" role="alert">
+            @ErrorMessage
+        </div>
+    }
+
+    <div style="margin-bottom: 15px;">
+        <label style="display:block; margin-bottom: 5px;">Username</label>
+        <input type="text" name="username" class="form-control" required />
+    </div>
+
+    <div style="margin-bottom: 15px;">
+        <label style="display:block; margin-bottom: 5px;">Password</label>
+        <input type="password" name="password" class="form-control" required />
+    </div>
+
+    <div style="margin-bottom: 20px; display: flex; align-items: center;">
+        <input type="checkbox" name="rememberMe" value="true" id="rem" style="margin-right: 8px;" />
+        <label for="rem">Remember Me</label>
+    </div>
+
+    <button type="submit" class="btn-primary">Log In</button>
+
+    <div class="register-link">
+        Don't have an account? <a href="register">Sign up</a>
+    </div>
+</form>
+
+@code {
+    private string? ErrorMessage;
+
+    protected override void OnInitialized()
+    {
+        Uri uri = NavManager.ToAbsoluteUri(NavManager.Uri);
+
+        if (QueryHelpers.ParseQuery(uri.Query).TryGetValue("error", out var error))
+        {
+            ErrorMessage = error;
+        }
+    }
+}
+
+<style>
+    .form-control {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        box-sizing: border-box;
+    }
+
+    .btn-primary {
+        width: 100%;
+        padding: 10px;
+        background-color: #007bff;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 16px;
+    }
+
+        .btn-primary:hover {
+            background-color: #0056b3;
+        }
+</style>
